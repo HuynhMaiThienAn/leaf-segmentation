@@ -18,16 +18,25 @@ for img_path in image_paths:
         print(f"Error loading {img_path}")
         continue
         
-    # 2. Convert BGR to Lab
+    # 2. Convert BGR to Lab and extract channels
     img_lab = cv2.cvtColor(img, cv2.COLOR_BGR2Lab)
     l_channel, a_channel, b_channel = cv2.split(img_lab)
     
-    # 3. Prepare A and B channels for PCA color features
-    a_flat = a_channel.astype(np.float32).reshape(-1, 1)
-    b_flat = b_channel.astype(np.float32).reshape(-1, 1)
-    color_features = np.hstack((a_flat, b_flat))
+    # Extract Hue and Saturation channels from HSV space
+    img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    h_channel, s_channel, _ = cv2.split(img_hsv)
     
-    # 4. Perform PCA to isolate the axis of maximum color variation (PC1)
+    # 3. Stack all 5 channels and standardize before PCA to prevent lightness dominance
+    channels = [l_channel, a_channel, b_channel, s_channel, h_channel]
+    flats = []
+    for ch in channels:
+        ch_f = ch.astype(np.float32)
+        std = ch_f.std()
+        ch_norm = (ch_f - ch_f.mean()) / (std if std > 1e-8 else 1.0)
+        flats.append(ch_norm.reshape(-1, 1))
+    color_features = np.hstack(flats)
+    
+    # 4. Perform PCA to isolate the axis of maximum variation (PC1)
     mean, eigenvectors, eigenvalues = cv2.PCACompute2(color_features, mean=None)
     projected = cv2.PCAProject(color_features, mean, eigenvectors)
     pc1 = projected[:, 0].reshape(a_channel.shape)
@@ -49,6 +58,21 @@ for img_path in image_paths:
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     cleaned = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
     cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel)
+    
+    # 8.5 Post-processing: Filter out background/gulley lines geometrically
+    contours, _ = cv2.findContours(cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    filtered_mask = np.zeros_like(cleaned)
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < 100 or area > 150000:
+            continue
+        x, y, w, h = cv2.boundingRect(cnt)
+        aspect_ratio = float(w) / h
+        # Ignore long horizontal lines or contours spanning most of the image width
+        if w > 0.8 * img.shape[1] or aspect_ratio > 4.0 or aspect_ratio < 0.25:
+            continue
+        cv2.drawContours(filtered_mask, [cnt], -1, 255, -1)
+    cleaned = filtered_mask
     
     # 9. Calculate metrics:
     # - Leaf Area: Count of non-zero pixels in the cleaned mask
