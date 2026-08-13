@@ -1,0 +1,3 @@
+"""
+Foliage Segmentation Pipeline Implementations
+"""
